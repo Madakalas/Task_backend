@@ -1,44 +1,47 @@
-# ESTATIQ — Smart Property Image & Experience Platform
+# ESTATIQ Backend
 
-> AI-powered real estate platform with GPT-4o Vision image analysis, automatic cover image selection, luxury description generation, and a premium Next.js frontend.
+> RESTful API for the ESTATIQ Smart Property Platform. Built with Node.js, Express.js, MongoDB, and OpenAI GPT-4o Vision for AI-powered image analysis, automatic cover image selection, luxury description generation, and intelligent property tagging.
 
 ---
 
-## Architecture
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Runtime | Node.js v18+ |
+| Framework | Express.js |
+| Database | MongoDB + Mongoose |
+| AI | OpenAI GPT-4o Vision |
+| Image Upload | Multer (local filesystem) |
+| Environment | dotenv |
+
+---
+
+## Project Structure
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    FRONTEND (Next.js)                    │
-│  Listing Page │ Detail Page │ Add Property Page          │
-│  Port: 3000                                              │
-└───────────────────────┬─────────────────────────────────┘
-                        │ HTTP REST API
-┌───────────────────────▼─────────────────────────────────┐
-│                 BACKEND (Express.js)                     │
-│  Port: 8000                                              │
-│                                                          │
-│  POST /api/properties          → Create property         │
-│  GET  /api/properties          → List + filter + paginate│
-│  GET  /api/properties/:id      → Property details        │
-│  POST /api/properties/:id/images → Upload images         │
-│  GET  /api/properties/:id/images → Get images            │
-└────────────┬──────────────────────────┬─────────────────┘
-             │                          │
-┌────────────▼───────┐    ┌─────────────▼──────────────────┐
-│  MongoDB (Local)   │    │   OpenAI GPT-4o Vision API      │
-│  Port: 27017       │    │                                 │
-│  DB: smart_property│    │  • Room type detection          │
-│                    │    │  • Feature extraction           │
-│  Collections:      │    │  • Quality scoring              │
-│  • properties      │    │  • Luxury description gen       │
-│  • images          │    │  • Improvement suggestions      │
-└────────────────────┘    └─────────────────────────────────┘
-             │
-┌────────────▼───────┐
-│  Local File Storage│
-│  /uploads/*.jpg    │
-│  Served as static  │
-└────────────────────┘
+smart-property-backend/
+├── src/
+│   ├── app.js                      ← Express app entry point
+│   ├── config/
+│   │   └── db.js                   ← MongoDB connection
+│   ├── models/
+│   │   ├── Property.js             ← Property schema + indexes
+│   │   └── Image.js                ← Image schema with AI fields
+│   ├── routes/
+│   │   ├── property.routes.js      ← Property endpoints
+│   │   └── image.routes.js         ← Image upload endpoints
+│   ├── controllers/
+│   │   ├── property.controller.js  ← Property CRUD logic
+│   │   └── image.controller.js     ← Upload + async AI trigger
+│   ├── services/
+│   │   └── openai.service.js       ← GPT-4o Vision integration
+│   └── middleware/
+│       └── upload.js               ← Multer config (5 files, 10MB)
+├── uploads/                        ← Stored property images
+├── .env.example                    ← Environment variable template
+├── .gitignore
+└── package.json
 ```
 
 ---
@@ -47,110 +50,312 @@
 
 ### Prerequisites
 - Node.js v18+
-- MongoDB running locally (port 27017)
-- OpenAI API Key (GPT-4o access)
+- MongoDB running locally on port 27017
+- OpenAI API Key with GPT-4o access
 
-### 1. Clone & Install Backend
+### 1. Install Dependencies
 
 ```bash
 cd smart-property-backend
 npm install
 ```
 
-### 2. Environment Variables
+### 2. Configure Environment
 
 ```bash
 cp .env.example .env
 ```
 
 Edit `.env`:
+
 ```env
 PORT=8000
 MONGODB_URI=mongodb://localhost:27017/smart_property_db
 OPENAI_API_KEY=your_openai_api_key_here
 ```
 
-### 3. Run Backend
+### 3. Run the Server
 
 ```bash
+# Development (auto-reload)
 npm run dev
-# Server running at http://localhost:8000
+
+# Production
+npm start
 ```
 
-### 4. Install & Run Frontend
+Server runs at: **http://localhost:8000**
 
-```bash
-cd estatiq_fixed
-pnpm install
-pnpm dev
-# Frontend at http://localhost:3000
+Uploaded images served at: **http://localhost:8000/uploads/**
+
+---
+
+## Database Schema
+
+### `properties` Collection
+
+```json
+{
+  "_id": "ObjectId",
+  "title": "String (required)",
+  "price": "Number (required, min: 0)",
+  "location": "String (required)",
+  "description": "String (AI generated, nullable)",
+  "tags": ["String"],
+  "coverImage": "ObjectId → images",
+  "status": "processing | ready | failed",
+  "createdAt": "Date",
+  "updatedAt": "Date"
+}
 ```
 
-### 5. Seed Demo Data (optional)
+### `images` Collection
 
-```bash
-cd estatiq_fixed
-node seed.js
-# Creates 40 properties with real images and AI analysis
+```json
+{
+  "_id": "ObjectId",
+  "propertyId": "ObjectId → properties",
+  "url": "String (/uploads/filename.jpg)",
+  "filename": "String",
+  "roomType": "bedroom | kitchen | exterior | pool | ...",
+  "features": ["pool", "sea_view", "garden", "luxury_interior"],
+  "improvements": ["improve lighting", "better angle"],
+  "score": "Number (0–100, AI quality rating)",
+  "isCover": "Boolean",
+  "aiStatus": "pending | done | failed",
+  "createdAt": "Date",
+  "updatedAt": "Date"
+}
 ```
 
 ---
 
 ## API Reference
 
+### Health Check
+
+```
+GET /health
+→ { status: "OK", message: "Smart Property API is running 🚀" }
+```
+
+---
+
 ### Properties
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/properties` | Create a new property |
-| `GET` | `/api/properties` | List properties (paginated + filtered) |
-| `GET` | `/api/properties/:id` | Get property with all images |
+#### Create Property
+```
+POST /api/properties
+Content-Type: application/json
 
-#### GET /api/properties — Query Parameters
+Body:
+{
+  "title": "Beachfront Villa in Goa",
+  "price": 4500000,
+  "location": "Goa, India"
+}
 
-| Param | Type | Description |
-|-------|------|-------------|
-| `page` | number | Page number (default: 1) |
-| `limit` | number | Items per page (default: 9) |
-| `location` | string | Filter by location (partial match) |
-| `minPrice` | number | Minimum price |
-| `maxPrice` | number | Maximum price |
-| `tags` | string | Comma-separated tags e.g. `luxury,pool` |
-| `search` | string | Search title or location |
+Response 201:
+{
+  "success": true,
+  "message": "Property created successfully",
+  "data": {
+    "_id": "...",
+    "title": "Beachfront Villa in Goa",
+    "price": 4500000,
+    "location": "Goa, India",
+    "status": "processing",
+    "tags": [],
+    "coverImage": null
+  }
+}
+```
+
+#### List Properties
+```
+GET /api/properties
+
+Query Parameters:
+  page        number   Page number (default: 1)
+  limit       number   Items per page (default: 9)
+  search      string   Search title or location
+  location    string   Filter by location (partial match)
+  minPrice    number   Minimum price
+  maxPrice    number   Maximum price
+  tags        string   Comma-separated tags e.g. luxury,pool,sea_view
+
+Response 200:
+{
+  "success": true,
+  "data": [ ...properties with populated coverImage ],
+  "pagination": {
+    "total": 40,
+    "page": 1,
+    "limit": 9,
+    "totalPages": 5
+  }
+}
+```
+
+#### Get Property Details
+```
+GET /api/properties/:id
+
+Response 200:
+{
+  "success": true,
+  "data": {
+    "_id": "...",
+    "title": "Beachfront Villa in Goa",
+    "price": 4500000,
+    "location": "Goa, India",
+    "description": "AI generated luxury description...",
+    "tags": ["luxury", "pool", "sea_view"],
+    "status": "ready",
+    "coverImage": { ...image object },
+    "images": [ ...all image objects sorted by score desc ]
+  }
+}
+```
+
+---
 
 ### Images
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `POST` | `/api/properties/:id/images` | Upload 1–5 images (multipart/form-data, field: `images`) |
-| `GET` | `/api/properties/:id/images` | Get all images for a property |
+#### Upload Images
+```
+POST /api/properties/:id/images
+Content-Type: multipart/form-data
+
+Field name: "images" (1–5 files)
+Accepted types: JPEG, PNG, WebP
+Max size: 10MB per file
+
+Response 202:
+{
+  "success": true,
+  "message": "Images uploaded. AI analysis running in background.",
+  "data": [ ...image records with aiStatus: "pending" ]
+}
+```
+
+> Returns **202 Accepted** immediately. AI analysis runs asynchronously in the background.
+
+#### Get Property Images
+```
+GET /api/properties/:id/images
+
+Response 200:
+{
+  "success": true,
+  "data": [
+    {
+      "_id": "...",
+      "propertyId": "...",
+      "url": "/uploads/uuid.jpg",
+      "roomType": "exterior",
+      "features": ["pool", "sea_view"],
+      "improvements": ["improve lighting"],
+      "score": 87,
+      "isCover": true,
+      "aiStatus": "done"
+    }
+  ]
+}
+```
 
 ---
 
 ## AI Integration
 
-### How It Works
+### Flow
 
-1. User uploads 1–5 images for a property
-2. Backend saves images to `/uploads/` and **responds immediately** (202)
-3. In the background, each image is sent to **GPT-4o Vision** which returns:
-   - `roomType` — bedroom, kitchen, exterior, pool, etc.
-   - `features[]` — pool, sea_view, garden, luxury_interior, etc.
-   - `improvements[]` — lighting suggestions, clarity tips, etc.
-   - `score` — quality rating 0–100
-4. The image with the **highest score** is auto-selected as cover image
-5. All features are aggregated into **property tags**
-6. A **luxury-style description** is generated from all image insights
-7. Property `status` changes from `processing` → `ready`
+```
+User uploads images
+       ↓
+Images saved to /uploads/ (immediate)
+       ↓
+202 Accepted → response sent to client
+       ↓
+Background job starts (async, non-blocking)
+       ↓
+For each image → GPT-4o Vision API call
+       ↓
+Returns: roomType, features[], improvements[], score
+       ↓
+Best score image → set as coverImage (isCover: true)
+       ↓
+All features → aggregated into property tags
+       ↓
+GPT-4o → generates luxury description from all insights
+       ↓
+Property status: "processing" → "ready"
+```
 
-### Frontend Polling
-The detail page polls `GET /api/properties/:id` every 4 seconds when `status === "processing"` and updates the UI automatically when AI completes.
+### GPT-4o Vision Prompt (Image Analysis)
+
+Each image is converted to base64 and sent to GPT-4o with this prompt:
+
+```
+Analyze this real estate property image and respond ONLY with valid JSON:
+{
+  "roomType": "bedroom | living_room | kitchen | bathroom | dining_room | exterior | garden | pool | balcony | other",
+  "features": ["pool", "sea_view", "garden", "luxury_interior", ...],
+  "improvements": ["short improvement suggestions"],
+  "score": <integer 0-100>
+}
+```
+
+### Cover Image Selection
+
+The image with the **highest AI quality score** (0–100) is automatically selected as the cover image. Score factors include:
+- Image clarity and resolution
+- Lighting quality
+- Subject matter (exterior/pool shots score higher)
+- Overall visual appeal for real estate
 
 ### Fallback Behavior
-If OpenAI fails for any reason:
-- Image analysis defaults to `{ roomType: "other", features: [], score: 50 }`
-- Description falls back to a generic luxury template
-- Property is still fully usable
+
+If OpenAI fails for any reason, the system **does not crash**:
+- Image defaults: `{ roomType: "other", features: [], improvements: [], score: 50 }`
+- Description defaults to a generic luxury template
+- Property is still created and fully usable
+- `aiStatus` is set to `"failed"` on the image record
+
+---
+
+## Error Handling
+
+All endpoints return consistent error responses:
+
+```json
+{
+  "success": false,
+  "message": "Human-readable error message",
+  "error": "Technical detail (dev only)"
+}
+```
+
+### Common Error Codes
+
+| Code | Cause |
+|------|-------|
+| 400 | Missing required fields, invalid file type, too many files |
+| 404 | Property not found |
+| 500 | Server/database error |
+
+### Upload-Specific Errors
+
+```json
+// File too large
+{ "success": false, "message": "File too large. Maximum size is 10MB per image." }
+
+// Too many files
+{ "success": false, "message": "Too many files. Maximum 5 images allowed." }
+
+// Wrong file type
+{ "success": false, "message": "Only JPEG, PNG, and WebP images are allowed" }
+```
 
 ---
 
@@ -158,34 +363,45 @@ If OpenAI fails for any reason:
 
 | Decision | Rationale | Production Alternative |
 |----------|-----------|----------------------|
-| Local file storage (Multer) | Simple setup, zero config | AWS S3 / Cloudinary |
-| GPT-4o with base64 images | Best vision accuracy | Batch API for scale |
-| Async AI (fire-and-forget) | Fast upload UX | Bull queue + Redis |
-| MongoDB local | Easy dev setup | MongoDB Atlas |
-| No authentication | Out of scope for assignment | JWT + Auth.js |
-| Polling for AI status | Simple to implement | WebSockets / SSE |
+| **Local file storage** | Zero config, simple setup | AWS S3 / Cloudinary |
+| **GPT-4o with base64** | Best vision accuracy, no URL sharing needed | Batch API for scale |
+| **Async AI (fire-and-forget)** | Fast upload UX, non-blocking | Bull queue + Redis for retry |
+| **MongoDB local** | Easy dev setup, no Atlas account needed | MongoDB Atlas |
+| **No authentication** | Out of assignment scope | JWT + refresh tokens |
+| **Polling for status** | Simple client implementation | WebSockets / Server-Sent Events |
+| **Port 8000** | Port 5000 conflicts with macOS AirPlay | Configurable via `.env` |
 
 ---
 
 ## Trade-offs & Assumptions
 
-- **Image storage**: Local filesystem used for simplicity. In production, S3/Cloudinary would handle CDN, resizing, and reliability
-- **AI async**: Fire-and-forget pattern is simple but has no retry on silent failure. Production would use a job queue (Bull/BullMQ)
-- **No auth**: Authentication was not listed as a requirement. Role-based access (agent/buyer/admin) would be added in production
-- **Cover selection**: Highest AI score wins. Could be improved with ML ranking that considers composition, lighting, and subject matter
-- **Tags**: Auto-derived from AI features. Users could also add manual tags in production
-- **Port 8000**: Changed from default 5000 due to macOS AirPlay conflict
+- **Image storage**: Local filesystem used for simplicity. In production, images should be on S3/Cloudinary with CDN for global delivery and reliability.
+
+- **AI async pattern**: Fire-and-forget is simple but provides no retry mechanism if AI fails silently. A production system would use a job queue (BullMQ) with retry logic, dead letter queues, and failure alerts.
+
+- **No authentication**: Role-based access (agent, buyer, admin) was not listed as a core requirement. JWT-based auth would be added in production.
+
+- **Cover image logic**: Highest AI score wins. Could be enhanced with a composite score factoring in image composition, subject matter priority (exterior > interior), and aspect ratio.
+
+- **Tag generation**: Tags are auto-derived from AI-detected features using a mapping table. Production could allow manual tag override by agents.
+
+- **Single database**: Properties and images are in separate collections but the same database. At scale, consider sharding or separating the image metadata store.
 
 ---
 
-## Tech Stack
+## Environment Variables
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Next.js 15, React 19, TypeScript, Tailwind CSS |
-| Backend | Node.js, Express.js |
-| Database | MongoDB + Mongoose |
-| AI | OpenAI GPT-4o Vision |
-| Image Storage | Multer (local filesystem) |
-| UI Components | shadcn/ui, Lucide React |
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `PORT` | No | Server port (default: 8000) |
+| `MONGODB_URI` | Yes | MongoDB connection string |
+| `OPENAI_API_KEY` | Yes | OpenAI API key (needs GPT-4o access) |
 
+---
+
+## Scripts
+
+```bash
+npm run dev     # Start with nodemon (auto-reload on file changes)
+npm start       # Start production server
+```
