@@ -60,26 +60,84 @@ const uploadImages = async (req, res) => {
   }
 };
 
+// Helper: wait ms milliseconds
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Helper: analyze with retry on 429
+const analyzeWithRetry = async (filePath, retries = 3) => {
+  for (let attempt = 1; attempt <= retries; attempt++) {
+    try {
+      const result = await analyzeImage(filePath);
+      return result;
+    } catch (err) {
+      const is429 = err.message && err.message.includes('429');
+      if (is429 && attempt < retries) {
+        const waitMs = attempt * 3000; // 3s, 6s, 9s
+        console.log(`  ⏳ Rate limited. Waiting ${waitMs / 1000}s before retry ${attempt}/${retries}...`);
+        await sleep(waitMs);
+      } else {
+        throw err;
+      }
+    }
+  }
+};
+
 /**
- * Background job: analyze images, pick cover, generate description, update property
+ * Background job: analyze every image individually,
+ * pick cover, generate description, update property
  */
 const processImagesWithAI = async (property, imageRecords) => {
   const insights = [];
 
-  // Analyze each image
+  console.log(`🤖 Starting AI analysis for ${imageRecords.length} images on property: ${property._id}`);
+
   for (const img of imageRecords) {
     const filePath = path.join('uploads', img.filename);
-    const analysis = await analyzeImage(filePath);
 
-    await Image.findByIdAndUpdate(img._id, {
-      roomType: analysis.roomType,
-      features: analysis.features,
-      improvements: analysis.improvements,
-      score: analysis.score,
-      aiStatus: 'done',
-    });
+    try {
+      console.log(`  📸 Analyzing image: ${img.filename}`);
 
-    insights.push({ ...analysis, imageId: img._id });
+      // Wait 2 seconds between each image to avoid hitting TPM limit
+      if (insights.length > 0) await sleep(2000);
+
+      const analysis = await analyzeWithRetry(filePath);
+
+      await Image.findByIdAndUpdate(img._id, {
+        roomType: analysis.roomType,
+        features: analysis.features,
+        improvements: analysis.improvements,
+        score: analysis.score,
+        aiStatus: 'done',
+      });
+
+      insights.push({ ...analysis, imageId: img._id });
+      console.log(`  ✅ ${img.filename} → ${analysis.roomType} (score: ${analysis.score})`);
+
+    } catch (err) {
+      console.error(`  ❌ Failed to analyze ${img.filename}:`, err.message);
+
+      await Image.findByIdAndUpdate(img._id, {
+        roomType: 'exterior',
+        features: [],
+        improvements: [],
+        score: 60,
+        aiStatus: 'failed',
+      });
+
+      insights.push({
+        roomType: 'exterior',
+        features: [],
+        improvements: [],
+        score: 60,
+        imageId: img._id,
+      });
+    }
+  }
+
+  // Need at least one insight to continue
+  if (insights.length === 0) {
+    await Property.findByIdAndUpdate(property._id, { status: 'failed' });
+    return;
   }
 
   // Pick best cover image (highest score)
@@ -90,13 +148,14 @@ const processImagesWithAI = async (property, imageRecords) => {
   // Mark as cover
   await Image.findByIdAndUpdate(bestImage.imageId, { isCover: true });
 
-  // Generate description
+  // Wait before description generation to avoid rate limit
+  await sleep(3000);
   const description = await generateDescription(property, insights);
 
-  // Extract tags
+  // Extract tags from all features
   const tags = extractTags(insights);
 
-  // Update property
+  // Update property to ready
   await Property.findByIdAndUpdate(property._id, {
     description,
     tags,
@@ -105,6 +164,8 @@ const processImagesWithAI = async (property, imageRecords) => {
   });
 
   console.log(`✅ AI processing complete for property: ${property._id}`);
+  console.log(`   Cover: ${bestImage.imageId} (score: ${bestImage.score})`);
+  console.log(`   Tags: ${tags.join(', ')}`);
 };
 
 /**

@@ -5,7 +5,7 @@ const path = require('path');
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 /**
- * Convert local image file to base64 data URL
+ * Convert local image file to base64
  */
 const imageToBase64 = (filePath) => {
   const absolutePath = path.resolve(filePath);
@@ -14,6 +14,19 @@ const imageToBase64 = (filePath) => {
   const ext = path.extname(filePath).replace('.', '').toLowerCase();
   const mimeType = ext === 'jpg' ? 'image/jpeg' : `image/${ext}`;
   return { base64, mimeType };
+};
+
+/**
+ * Safely parse JSON from GPT-4o response
+ * Handles cases where GPT wraps output in ```json ... ``` fences
+ */
+const safeParseJSON = (content) => {
+  // Strip markdown code fences if present
+  const cleaned = content
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/gi, '')
+    .trim();
+  return JSON.parse(cleaned);
 };
 
 /**
@@ -26,7 +39,7 @@ const analyzeImage = async (imagePath) => {
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4o',
-      max_tokens: 500,
+      max_tokens: 600,
       messages: [
         {
           role: 'user',
@@ -35,18 +48,23 @@ const analyzeImage = async (imagePath) => {
               type: 'image_url',
               image_url: {
                 url: `data:${mimeType};base64,${base64}`,
-                detail: 'low',
+                detail: 'high', // FIX 1: use high detail for accurate room detection
               },
             },
             {
               type: 'text',
-              text: `Analyze this real estate property image and respond ONLY with valid JSON (no markdown, no explanation):
+              text: `You are a real estate image analyst. Carefully examine this property image.
+
+Respond with ONLY a raw JSON object. No markdown, no code fences, no explanation. Just the JSON.
+
 {
-  "roomType": "one of: bedroom | living_room | kitchen | bathroom | dining_room | exterior | garden | pool | balcony | other",
-  "features": ["array of features visible, e.g: pool, sea_view, garden, luxury_interior, modern_kitchen, open_plan, natural_light, high_ceiling, fireplace, city_view"],
-  "improvements": ["array of 1-3 short improvement suggestions, e.g: improve lighting, increase image clarity, better angle, remove clutter"],
-  "score": <integer 0-100 representing image quality and appeal for real estate listing>
-}`,
+  "roomType": "Pick EXACTLY one: bedroom | living_room | kitchen | bathroom | dining_room | exterior | garden | pool | balcony | home_office | garage | terrace | other",
+  "features": ["Pick ALL that apply from: pool, sea_view, garden, city_view, luxury_interior, modern_design, natural_light, high_ceiling, fireplace, open_plan, wooden_floors, marble_floors, large_windows, balcony, terrace, mountain_view, lake_view, jacuzzi, home_theater, wine_cellar, smart_home"],
+  "improvements": ["List 1-3 specific improvements for this exact image, e.g: increase brightness, straighten horizon, declutter foreground, use wider angle lens, shoot during golden hour"],
+  "score": <integer from 0-100. 90+ = magazine quality. 70-89 = professional. 50-69 = acceptable. Below 50 = poor quality>
+}
+
+Be specific. If you see a swimming pool, include "pool". If there is a garden visible, include "garden". Do not return empty features array unless the image is completely blank.`,
             },
           ],
         },
@@ -54,21 +72,21 @@ const analyzeImage = async (imagePath) => {
     });
 
     const content = response.choices[0].message.content.trim();
-    const parsed = JSON.parse(content);
+    const parsed = safeParseJSON(content); // FIX 2: safe JSON parse strips markdown fences
+
     return {
-      roomType: parsed.roomType || 'other',
-      features: parsed.features || [],
-      improvements: parsed.improvements || [],
-      score: parsed.score || 50,
+      roomType: parsed.roomType || 'exterior',
+      features: Array.isArray(parsed.features) ? parsed.features : [],
+      improvements: Array.isArray(parsed.improvements) ? parsed.improvements : [],
+      score: typeof parsed.score === 'number' ? parsed.score : 60,
     };
   } catch (error) {
-    console.error('❌ OpenAI image analysis failed:', error.message);
-    // Fallback so the app doesn't crash
+    console.error(`❌ OpenAI image analysis failed for ${imagePath}:`, error.message);
     return {
-      roomType: 'other',
+      roomType: 'exterior',
       features: [],
       improvements: [],
-      score: 50,
+      score: 60,
     };
   }
 };
@@ -78,29 +96,37 @@ const analyzeImage = async (imagePath) => {
  */
 const generateDescription = async (propertyData, imageInsights) => {
   try {
-    const insightsSummary = imageInsights
-      .map(
-        (img) =>
-          `- ${img.roomType}: features include ${img.features.join(', ') || 'none detected'}`
-      )
+    const roomSummary = imageInsights
+      .filter(img => img.roomType && img.roomType !== 'other')
+      .map(img => `${img.roomType.replace(/_/g, ' ')}: ${img.features.join(', ') || 'elegant space'}`)
       .join('\n');
+
+    const allFeatures = [...new Set(imageInsights.flatMap(img => img.features))];
 
     const response = await openai.chat.completions.create({
       model: 'gpt-4o',
-      max_tokens: 300,
+      max_tokens: 350,
       messages: [
         {
           role: 'user',
-          content: `Write a short, luxury real estate description (3-4 sentences) for this property:
+          content: `Write a 3-4 sentence luxury real estate listing description for this property.
 
 Property: ${propertyData.title}
 Location: ${propertyData.location}
 Price: $${propertyData.price.toLocaleString()}
 
-Image Analysis:
-${insightsSummary}
+Rooms & Spaces detected:
+${roomSummary || 'Luxury property with premium finishes'}
 
-Style: Premium, aspirational, evocative. Like a high-end real estate listing. No bullet points, just flowing prose.`,
+Key features: ${allFeatures.slice(0, 8).join(', ') || 'premium finishes, luxury design'}
+
+Requirements:
+- Write in flowing prose, no bullet points
+- Use aspirational, premium language
+- Be specific about features detected
+- Sound like a Sotheby's or Christie's listing
+- Do not start with "Nestled" or "Welcome"
+- 3-4 sentences only`,
         },
       ],
     });
@@ -108,7 +134,7 @@ Style: Premium, aspirational, evocative. Like a high-end real estate listing. No
     return response.choices[0].message.content.trim();
   } catch (error) {
     console.error('❌ OpenAI description generation failed:', error.message);
-    return `Experience the pinnacle of luxury living at ${propertyData.title}, located in the prestigious ${propertyData.location}. This exceptional property offers an unparalleled lifestyle opportunity.`;
+    return `${propertyData.title} represents the pinnacle of luxury living in ${propertyData.location}. This exceptional residence offers an unparalleled lifestyle with premium finishes and sophisticated design throughout. Every detail has been curated to deliver an extraordinary living experience for the most discerning buyer.`;
   }
 };
 
@@ -119,16 +145,25 @@ const extractTags = (imageInsights) => {
   const tagMap = {
     pool: 'pool',
     sea_view: 'sea_view',
+    lake_view: 'sea_view',
+    mountain_view: 'sea_view',
     garden: 'garden',
     luxury_interior: 'luxury',
-    modern_kitchen: 'modern',
+    modern_design: 'modern',
     open_plan: 'open_plan',
     natural_light: 'bright',
     high_ceiling: 'spacious',
     fireplace: 'cozy',
     city_view: 'city_view',
     balcony: 'balcony',
-    exterior: 'outdoor',
+    terrace: 'balcony',
+    jacuzzi: 'pool',
+    home_theater: 'luxury',
+    wine_cellar: 'luxury',
+    smart_home: 'modern',
+    wooden_floors: 'luxury',
+    marble_floors: 'luxury',
+    large_windows: 'bright',
   };
 
   const allFeatures = imageInsights.flatMap((img) => img.features);
@@ -138,7 +173,7 @@ const extractTags = (imageInsights) => {
     .map((f) => tagMap[f] || f.toLowerCase().replace(/\s+/g, '_'))
     .filter(Boolean);
 
-  return [...new Set(tags)];
+  return [...new Set(tags)].slice(0, 8); // max 8 tags
 };
 
 module.exports = { analyzeImage, generateDescription, extractTags };
